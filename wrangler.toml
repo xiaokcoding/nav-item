@@ -1,0 +1,21 @@
+name = "nav-item-pages"
+compatibility_date = "2025-12-08"
+pages_build_output_dir = "web/dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "你的数据库名"
+database_id = "你的数据库ID"
+
+[[r2_buckets]]
+binding = "R2"
+binding = "R2"
+bucket_name = "你的存储桶名"
+preview_bucket_name = "你的存储桶名"
+
+[vars]
+#JWT_SECRET = "change-me"
+#ADMIN_USERNAME = "admin"
+#ADMIN_PASSWORD = "change-me"
+#R2_PUBLIC_BASE = "https://r2.example.com/nav-item"
+#VITE_UPLOAD_BASE = "https://r2.example.com/nav-item"

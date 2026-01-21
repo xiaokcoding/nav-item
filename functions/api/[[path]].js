@@ -46,6 +46,102 @@ async function ensureAdmin(c) {
   return null;
 }
 
+async function ensureSeed(c) {
+  const row = await c.env.DB.prepare('SELECT COUNT(*) as count FROM menus').first();
+  if ((row?.count || 0) > 0) return null;
+  const statements = [
+    'INSERT INTO menus (name, "order") VALUES' +
+      "('Home', 1)," +
+      "('Ai Stuff', 2)," +
+      "('Cloud', 3)," +
+      "('Software', 4)," +
+      "('Tools', 5)," +
+      "('Other', 6);",
+    'INSERT INTO sub_menus (parent_id, name, "order") VALUES' +
+      "((SELECT id FROM menus WHERE name='Ai Stuff'), 'AI chat', 1)," +
+      "((SELECT id FROM menus WHERE name='Ai Stuff'), 'AI tools', 2)," +
+      "((SELECT id FROM menus WHERE name='Tools'), 'Dev Tools', 1)," +
+      "((SELECT id FROM menus WHERE name='Software'), 'Mac', 1)," +
+      "((SELECT id FROM menus WHERE name='Software'), 'iOS', 2)," +
+      "((SELECT id FROM menus WHERE name='Software'), 'Android', 3)," +
+      "((SELECT id FROM menus WHERE name='Software'), 'Windows', 4);",
+    'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, desc) VALUES' +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'Baidu', 'https://www.baidu.com', '', '全球最大的中文搜索引擎')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'Youtube', 'https://www.youtube.com', 'https://img.icons8.com/ios-filled/100/ff1d06/youtube-play.png', '全球最大的视频社区')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'Gmail', 'https://mail.google.com', 'https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico', '')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'GitHub', 'https://github.com', '', '全球最大的代码托管平台')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'ip.sb', 'https://ip.sb', '', 'ip地址查询')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'Cloudflare', 'https://dash.cloudflare.com', '', '全球最大的cdn服务商')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'ChatGPT', 'https://chat.openai.com', 'https://cdn.oaistatic.com/assets/favicon-eex17e9e.ico', '人工智能AI聊天机器人')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'Huggingface', 'https://huggingface.co', '', '全球最大的开源模型托管平台')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'ITDOG - 在线ping', 'https://www.itdog.cn/tcping', '', '在线tcping')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'Ping0', 'https://ping0.cc', '', 'ip地址查询')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, '浏览器指纹', 'https://www.browserscan.net/zh', '', '浏览器指纹查询')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'nezha面板', 'https://ssss.nyc.mn', 'https://nezha.wiki/logo.png', 'nezha面板')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'Api测试', 'https://hoppscotch.io', '', '在线api测试工具')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, '域名检查', 'https://who.cx', '', '域名可用性查询')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, '域名比价', 'https://www.whois.com', '', '域名价格比较')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'NodeSeek', 'https://www.nodeseek.com', 'https://www.nodeseek.com/static/image/favicon/favicon-32x32.png', '主机论坛')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'Linux do', 'https://linux.do', 'https://linux.do/uploads/default/optimized/3X/9/d/9dd49731091ce8656e94433a26a3ef36062b3994_2_32x32.png', '新的理想型社区')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, '在线音乐', 'https://music.eooce.com', 'https://p3.music.126.net/tBTNafgjNnTL1KlZMt7lVA==/18885211718935735.jpg', '在线音乐')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, '在线电影', 'https://libretv.eooce.com', 'https://img.icons8.com/color/240/cinema---v1.png', '在线电影')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, '免费接码', 'https://www.smsonline.cloud/zh', '', '免费接收短信验证码')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, '订阅转换', 'https://sublink.eooce.com', 'https://img.icons8.com/color/96/link--v1.png', '最好用的订阅转换工具')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, 'webssh', 'https://ssh.eooce.com', 'https://img.icons8.com/fluency/240/ssh.png', '最好用的webssh终端管理工具')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, '文件快递柜', 'https://filebox.nnuu.nyc.mn', 'https://img.icons8.com/nolan/256/document.png', '文件输出分享')," +
+      "((SELECT id FROM menus WHERE name='Home'), NULL, '真实地址生成', 'https://address.nnuu.nyc.mn', 'https://static11.meiguodizhi.com/favicon.ico', '基于当前ip生成真实的地址')," +
+      "((SELECT id FROM menus WHERE name='Ai Stuff'), NULL, 'ChatGPT', 'https://chat.openai.com', 'https://cdn.oaistatic.com/assets/favicon-eex17e9e.ico', 'OpenAI官方AI对话')," +
+      "((SELECT id FROM menus WHERE name='Ai Stuff'), NULL, 'Deepseek', 'https://www.deepseek.com', 'https://cdn.deepseek.com/chat/icon.png', 'Deepseek AI搜索')," +
+      "((SELECT id FROM menus WHERE name='Ai Stuff'), NULL, 'Claude', 'https://claude.ai', 'https://img.icons8.com/fluency/240/claude-ai.png', 'Anthropic Claude AI')," +
+      "((SELECT id FROM menus WHERE name='Ai Stuff'), NULL, 'Google Gemini', 'https://gemini.google.com', 'https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg', 'Google Gemini大模型')," +
+      "((SELECT id FROM menus WHERE name='Ai Stuff'), NULL, '阿里千问', 'https://chat.qwenlm.ai', 'https://g.alicdn.com/qwenweb/qwen-ai-fe/0.0.11/favicon.ico', '阿里云千问大模型')," +
+      "((SELECT id FROM menus WHERE name='Ai Stuff'), NULL, 'Kimi', 'https://www.kimi.com', '', '月之暗面Moonshot AI')," +
+      "(NULL, (SELECT id FROM sub_menus WHERE name='AI chat'), 'ChatGPT', 'https://chat.openai.com', 'https://cdn.oaistatic.com/assets/favicon-eex17e9e.ico', 'OpenAI官方AI对话')," +
+      "(NULL, (SELECT id FROM sub_menus WHERE name='AI chat'), 'Deepseek', 'https://www.deepseek.com', 'https://cdn.deepseek.com/chat/icon.png', 'Deepseek AI搜索')," +
+      "(NULL, (SELECT id FROM sub_menus WHERE name='AI tools'), 'ChatGPT', 'https://chat.openai.com', 'https://cdn.oaistatic.com/assets/favicon-eex17e9e.ico', 'OpenAI官方AI对话')," +
+      "(NULL, (SELECT id FROM sub_menus WHERE name='AI tools'), 'Deepseek', 'https://www.deepseek.com', 'https://cdn.deepseek.com/chat/icon.png', 'Deepseek AI搜索')," +
+      "((SELECT id FROM menus WHERE name='Cloud'), NULL, '阿里云', 'https://www.aliyun.com', 'https://img.alicdn.com/tfs/TB1_ZXuNcfpK1RjSZFOXXa6nFXa-32-32.ico', '阿里云官网')," +
+      "((SELECT id FROM menus WHERE name='Cloud'), NULL, '腾讯云', 'https://cloud.tencent.com', '', '腾讯云官网')," +
+      "((SELECT id FROM menus WHERE name='Cloud'), NULL, '甲骨文云', 'https://cloud.oracle.com', '', 'Oracle Cloud')," +
+      "((SELECT id FROM menus WHERE name='Cloud'), NULL, '亚马逊云', 'https://aws.amazon.com', 'https://img.icons8.com/color/144/amazon-web-services.png', 'Amazon AWS')," +
+      "((SELECT id FROM menus WHERE name='Cloud'), NULL, 'DigitalOcean', 'https://www.digitalocean.com', 'https://www.digitalocean.com/_next/static/media/apple-touch-icon.d7edaa01.png', 'DigitalOcean VPS')," +
+      "((SELECT id FROM menus WHERE name='Cloud'), NULL, 'Vultr', 'https://www.vultr.com', '', 'Vultr VPS')," +
+      "((SELECT id FROM menus WHERE name='Software'), NULL, 'Hellowindows', 'https://hellowindows.cn', 'https://hellowindows.cn/logo-s.png', 'windows系统及office下载')," +
+      "((SELECT id FROM menus WHERE name='Software'), NULL, '奇迹秀', 'https://www.qijishow.com/down', 'https://www.qijishow.com/img/ico.ico', '设计师的百宝箱')," +
+      "((SELECT id FROM menus WHERE name='Software'), NULL, '易破解', 'https://www.ypojie.com', 'https://www.ypojie.com/favicon.ico', '精品windows软件')," +
+      "((SELECT id FROM menus WHERE name='Software'), NULL, '软件先锋', 'https://topcracked.com', 'https://cdn.mac89.com/win_macxf_node/static/favicon.ico', '精品windows软件')," +
+      "((SELECT id FROM menus WHERE name='Software'), NULL, 'Macwk', 'https://www.macwk.com', 'https://www.macwk.com/favicon-32x32.ico', '精品Mac软件')," +
+      "((SELECT id FROM menus WHERE name='Software'), NULL, 'Macsc', 'https://mac.macsc.com', 'https://cdn.mac89.com/macsc_node/static/favicon.ico', '')," +
+      "((SELECT id FROM menus WHERE name='Tools'), NULL, 'JSON工具', 'https://www.json.cn', 'https://img.icons8.com/nolan/128/json.png', 'JSON格式化/校验')," +
+      "((SELECT id FROM menus WHERE name='Tools'), NULL, 'base64工具', 'https://www.qqxiuzi.cn/bianma/base64.htm', 'https://cdn.base64decode.org/assets/images/b64-180.webp', '在线base64编码解码')," +
+      "((SELECT id FROM menus WHERE name='Tools'), NULL, '二维码生成', 'https://cli.im', 'https://img.icons8.com/fluency/96/qr-code.png', '二维码生成工具')," +
+      "((SELECT id FROM menus WHERE name='Tools'), NULL, 'JS混淆', 'https://obfuscator.io', 'https://img.icons8.com/color/240/javascript--v1.png', '在线Javascript代码混淆')," +
+      "((SELECT id FROM menus WHERE name='Tools'), NULL, 'Python混淆', 'https://freecodingtools.org/tools/obfuscator/python', 'https://img.icons8.com/color/240/python--v1.png', '在线python代码混淆')," +
+      "((SELECT id FROM menus WHERE name='Tools'), NULL, 'Remove.photos', 'https://remove.photos/zh-cn', 'https://img.icons8.com/doodle/192/picture.png', '一键抠图')," +
+      "(NULL, (SELECT id FROM sub_menus WHERE name='Dev Tools'), 'Uiverse', 'https://uiverse.io/elements', 'https://img.icons8.com/fluency/96/web-design.png', 'CSS动画和设计元素')," +
+      "(NULL, (SELECT id FROM sub_menus WHERE name='Dev Tools'), 'Icons8', 'https://igoutu.cn/icons', 'https://maxst.icons8.com/vue-static/landings/primary-landings/favs/icons8_fav_32×32.png', '免费图标和设计资源')," +
+      "((SELECT id FROM menus WHERE name='Other'), NULL, 'Gmail', 'https://mail.google.com', 'https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico', 'Google邮箱')," +
+      "((SELECT id FROM menus WHERE name='Other'), NULL, 'Outlook', 'https://outlook.live.com', 'https://img.icons8.com/color/256/ms-outlook.png', '微软Outlook邮箱')," +
+      "((SELECT id FROM menus WHERE name='Other'), NULL, 'Proton Mail', 'https://account.proton.me', 'https://account.proton.me/assets/apple-touch-icon-120x120.png', '安全加密邮箱')," +
+      "((SELECT id FROM menus WHERE name='Other'), NULL, 'QQ邮箱', 'https://mail.qq.com', 'https://mail.qq.com/zh_CN/htmledition/images/favicon/qqmail_favicon_96h.png', '腾讯QQ邮箱')," +
+      "((SELECT id FROM menus WHERE name='Other'), NULL, '雅虎邮箱', 'https://mail.yahoo.com', 'https://img.icons8.com/color/240/yahoo--v2.png', '雅虎邮箱')," +
+      "((SELECT id FROM menus WHERE name='Other'), NULL, '10分钟临时邮箱', 'https://linshiyouxiang.net', 'https://linshiyouxiang.net/static/index/zh/images/favicon.ico', '10分钟临时邮箱');",
+    'INSERT INTO friends (title, url, logo) VALUES' +
+      "('Noodseek图床', 'https://www.nodeimage.com', 'https://www.nodeseek.com/static/image/favicon/favicon-32x32.png')," +
+      "('Font Awesome', 'https://fontawesome.com', 'https://fontawesome.com/favicon.ico');"
+  ];
+  for (const sql of statements) {
+    await c.env.DB.prepare(sql).run();
+  }
+  return null;
+}
+
+app.use('/api/*', async (c, next) => {
+  const seedRes = await ensureSeed(c);
+  if (seedRes) return seedRes;
+  await next();
+});
+
 app.get('/api/health', (c) => {
   return c.json({ ok: true, timestamp: new Date().toISOString() });
 });

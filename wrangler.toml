@@ -1,9 +1,0 @@
-name = "nav-item"
-compatibility_date = "2025-01-21"
-pages_build_output_dir = "web/dist"
-[vars]
-# 可在 Cloudflare Pages 项目设置中覆盖
-
-[[r2_buckets]]
-binding = "UPLOADS"
-bucket_name = "nav-item-uploads"

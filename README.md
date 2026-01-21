@@ -70,6 +70,7 @@ wrangler d1 create nav-item
 wrangler d1 migrations apply nav-item --remote
 ```
 8) 提交并部署：推送到 GitHub 后，Pages 会自动构建并发布。
+9) 初始数据：部署后首次访问任意 `/api/*` 会自动写入默认菜单与友链数据。
 
 ### Wrangler 方式（可选）
 创建 D1 与迁移：
@@ -85,7 +86,10 @@ wrangler d1 migrations apply nav-item --remote
 wrangler d1 migrations apply nav-item --local
 ```
 
-可选种子数据：
+默认种子数据：
+项目在首次访问任意 `/api/*` 时，会检测 `menus` 表是否为空，若为空则自动插入内置的初始数据（等同于 `migrations/seed.sql`）。
+
+如需手动导入（可选）：
 ```bash
 wrangler d1 execute nav-item --file=migrations/seed.sql --local
 ```

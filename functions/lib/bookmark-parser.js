@@ -48,6 +48,14 @@ export function sanitizeUrl(url) {
 export function parseBookmarkHtml(html) {
   const errors = [];
   const menus = [];
+  const defaultRootFolderNames = new Set([
+    '书签栏',
+    '其他书签',
+    'Bookmarks Bar',
+    'Other Bookmarks',
+    'Bookmarks Toolbar',
+    'Mobile Bookmarks'
+  ].map((name) => name.toLowerCase()));
 
   try {
     const root = parse(html, {
@@ -67,8 +75,36 @@ export function parseBookmarkHtml(html) {
       return { menus, errors };
     }
 
-    // 解析顶层 DL 下的内容
-    parseBookmarkLevel(topDl, menus, null, errors, 0);
+    const topLevelDtNodes = topDl.childNodes.filter((node) => (
+      node.nodeType === 1 && node.tagName?.toLowerCase() === 'dt'
+    ));
+    const topLevelFolders = topLevelDtNodes.map((node) => {
+      const h3 = node.querySelector('h3');
+      const nestedDl = node.querySelector('dl');
+      return {
+        name: h3 ? sanitizeString(h3.text || h3.textContent || '') : '',
+        hasBookmark: Boolean(node.querySelector('a')),
+        nestedDl
+      };
+    });
+    const hasOnlyDefaultRootFolders = topLevelFolders.length > 0
+      && topLevelFolders.every((folder) => {
+        if (!folder.name) return false;
+        if (folder.hasBookmark) return false;
+        return defaultRootFolderNames.has(folder.name.toLowerCase());
+      });
+
+    if (hasOnlyDefaultRootFolders) {
+      errors.push('已自动跳过浏览器默认根目录，以匹配常见导出结构');
+      for (const folder of topLevelFolders) {
+        if (folder.nestedDl) {
+          parseBookmarkLevel(folder.nestedDl, menus, null, errors, 0);
+        }
+      }
+    } else {
+      // 解析顶层 DL 下的内容
+      parseBookmarkLevel(topDl, menus, null, errors, 0);
+    }
 
   } catch (e) {
     errors.push(`解析错误: ${e.message}`);

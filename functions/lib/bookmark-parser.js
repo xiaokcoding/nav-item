@@ -48,14 +48,6 @@ export function sanitizeUrl(url) {
 export function parseBookmarkHtml(html) {
   const errors = [];
   const menus = [];
-  const defaultRootFolderNames = new Set([
-    '书签栏',
-    '其他书签',
-    'Bookmarks Bar',
-    'Other Bookmarks',
-    'Bookmarks Toolbar',
-    'Mobile Bookmarks'
-  ].map((name) => name.toLowerCase()));
 
   try {
     const root = parse(html, {
@@ -75,42 +67,82 @@ export function parseBookmarkHtml(html) {
       return { menus, errors };
     }
 
-    const topLevelDtNodes = topDl.childNodes.filter((node) => (
-      node.nodeType === 1 && node.tagName?.toLowerCase() === 'dt'
-    ));
-    const topLevelFolders = topLevelDtNodes.map((node) => {
-      const h3 = node.querySelector('h3');
-      const nestedDl = node.querySelector('dl');
-      return {
-        name: h3 ? sanitizeString(h3.text || h3.textContent || '') : '',
-        hasBookmark: Boolean(node.querySelector('a')),
-        nestedDl
-      };
-    });
-    const hasOnlyDefaultRootFolders = topLevelFolders.length > 0
-      && topLevelFolders.every((folder) => {
-        if (!folder.name) return false;
-        if (folder.hasBookmark) return false;
-        return defaultRootFolderNames.has(folder.name.toLowerCase());
-      });
-
-    if (hasOnlyDefaultRootFolders) {
-      errors.push('已自动跳过浏览器默认根目录，以匹配常见导出结构');
-      for (const folder of topLevelFolders) {
-        if (folder.nestedDl) {
-          parseBookmarkLevel(folder.nestedDl, menus, null, errors, 0);
-        }
-      }
-    } else {
-      // 解析顶层 DL 下的内容
-      parseBookmarkLevel(topDl, menus, null, errors, 0);
-    }
+    // 解析顶层 DL 下的内容
+    parseTopLevelBookmarks(topDl, menus, errors);
 
   } catch (e) {
     errors.push(`解析错误: ${e.message}`);
   }
 
   return { menus, errors };
+}
+
+const ROOT_FOLDER_NAMES = new Set([
+  '书签栏',
+  '其他书签',
+  '书签菜单',
+  '移动书签',
+  'bookmarks bar',
+  'bookmarks toolbar',
+  'other bookmarks',
+  'mobile bookmarks',
+  'bookmarks menu'
+]);
+
+/**
+ * 解析顶层 DL（跳过浏览器默认根目录）
+ * @param {HTMLElement} dlElement
+ * @param {Array} targetArray
+ * @param {Array} errors
+ */
+function parseTopLevelBookmarks(dlElement, targetArray, errors) {
+  if (!dlElement) return;
+
+  const children = dlElement.childNodes;
+  const topLevelOrder = { value: 0 };
+  let skippedRootFolder = false;
+
+  for (const child of children) {
+    if (child.nodeType !== 1) continue;
+
+    const tagName = child.tagName?.toLowerCase();
+    if (tagName !== 'dt') continue;
+
+    const h3 = child.querySelector('h3');
+    const nestedDl = child.querySelector('dl');
+
+    if (h3) {
+      const folderName = (h3.text || h3.textContent || '').trim();
+      const isRootFolder = isRootContainerFolder(h3, folderName);
+
+      if (isRootFolder) {
+        skippedRootFolder = true;
+        if (nestedDl) {
+          parseBookmarkLevel(nestedDl, targetArray, null, errors, 0, topLevelOrder);
+        }
+        continue;
+      }
+    }
+
+    parseBookmarkLevel(child, targetArray, null, errors, 0, topLevelOrder);
+  }
+
+  if (skippedRootFolder) {
+    errors.push('已自动跳过浏览器默认根目录，以匹配常见导出结构');
+  }
+}
+
+/**
+ * 判断是否为浏览器默认根目录
+ * @param {HTMLElement} h3Element
+ * @param {string} folderName
+ * @returns {boolean}
+ */
+function isRootContainerFolder(h3Element, folderName) {
+  if (!folderName) return false;
+  const normalized = folderName.trim().toLowerCase();
+  const isToolbar = (h3Element.getAttribute('personal_toolbar_folder') || '').toLowerCase() === 'true';
+  return isToolbar || ROOT_FOLDER_NAMES.has(normalized);
 }
 
 /**
@@ -120,12 +152,14 @@ export function parseBookmarkHtml(html) {
  * @param {object|null} parentMenu 父菜单
  * @param {Array} errors 错误数组
  * @param {number} depth 当前深度
+ * @param {{ value: number } | null} orderState 当前层级的排序状态
  */
-function parseBookmarkLevel(dlElement, targetArray, parentMenu, errors, depth) {
+function parseBookmarkLevel(dlElement, targetArray, parentMenu, errors, depth, orderState = null) {
   if (!dlElement) return;
 
-  const children = dlElement.childNodes;
-  let currentOrder = 0;
+  const elementTag = dlElement.tagName?.toLowerCase();
+  const children = elementTag === 'dt' ? [dlElement] : dlElement.childNodes;
+  const orderRef = orderState || { value: 0 };
 
   for (const child of children) {
     if (child.nodeType !== 1) continue; // 只处理元素节点
@@ -152,7 +186,7 @@ function parseBookmarkLevel(dlElement, targetArray, parentMenu, errors, depth) {
         const menu = {
           type: 'menu',
           name: folderName,
-          order: currentOrder++,
+          order: orderRef.value++,
           subMenus: [],
           cards: []
         };
@@ -167,7 +201,7 @@ function parseBookmarkLevel(dlElement, targetArray, parentMenu, errors, depth) {
         const subMenu = {
           type: 'subMenu',
           name: folderName,
-          order: currentOrder++,
+          order: orderRef.value++,
           cards: []
         };
         parentMenu.subMenus.push(subMenu);
@@ -199,7 +233,7 @@ function parseBookmarkLevel(dlElement, targetArray, parentMenu, errors, depth) {
         title: title || url,
         url: url,
         desc: '',
-        order: currentOrder++
+        order: orderRef.value++
       };
 
       // 根据深度决定添加位置

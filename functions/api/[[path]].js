@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { SignJWT, jwtVerify } from 'jose';
 import bcrypt from 'bcryptjs';
-import { parseBookmarkHtml, flattenParsedData, MAX_FILE_SIZE } from '../lib/bookmark-parser.js';
+import { parseBookmarkHtml, generateImportPlan, MAX_FILE_SIZE } from '../lib/bookmark-parser.js';
 
 const app = new Hono();
 
@@ -389,273 +389,412 @@ app.get('/api/users', requireAuth, async (c) => {
 // ==================== 书签导入 API ====================
 
 /**
- * POST /api/import/bookmarks
- * 导入 Google Chrome 导出的书签 HTML 文件
- *
- * 参数:
- * - file: HTML 文件 (multipart/form-data)
- * - mode: merge | replace (默认 merge)
- * - target: auto | menu:<id> (默认 auto)
- * - dryRun: true | false (默认 false)
+ * 加载已存在的菜单/分组/URL 数据
  */
-app.post('/api/import/bookmarks', requireAuth, async (c) => {
+async function loadExistingData(db, targetMenuId) {
+  const existingMenus = new Map(); // name => id
+  const existingGroups = new Map(); // menuId => Map<groupName, id>
+  const existingUrls = new Map(); // "menuId-groupId" => Set<url>
+
+  // 加载菜单
+  const menusRes = await db.prepare('SELECT id, name FROM menus').all();
+  for (const m of (menusRes.results || [])) {
+    existingMenus.set(m.name, m.id);
+  }
+
+  // 加载分组
+  const groupsRes = await db.prepare('SELECT id, parent_id, name FROM sub_menus').all();
+  for (const g of (groupsRes.results || [])) {
+    const parentKey = String(g.parent_id);
+    if (!existingGroups.has(parentKey)) {
+      existingGroups.set(parentKey, new Map());
+    }
+    existingGroups.get(parentKey).set(g.name, g.id);
+  }
+
+  // 加载 URL
+  let cardsQuery = 'SELECT menu_id, sub_menu_id, url FROM cards';
+  let cardsParams = [];
+  if (targetMenuId) {
+    cardsQuery += ' WHERE menu_id = ?';
+    cardsParams = [targetMenuId];
+  }
+  const cardsRes = await db.prepare(cardsQuery).bind(...cardsParams).all();
+  for (const c of (cardsRes.results || [])) {
+    const key = `${c.menu_id}-${c.sub_menu_id || 'null'}`;
+    if (!existingUrls.has(key)) {
+      existingUrls.set(key, new Set());
+    }
+    existingUrls.get(key).add(c.url);
+  }
+
+  return { existingMenus, existingGroups, existingUrls };
+}
+
+/**
+ * POST /api/import/bookmarks/preview
+ * 预览导入计划，不写入数据库
+ */
+app.post('/api/import/bookmarks/preview', requireAuth, async (c) => {
   try {
-    // 解析 form data
     const formData = await c.req.formData();
     const file = formData.get('file');
-    const mode = formData.get('mode') || c.req.query('mode') || 'merge';
-    const target = formData.get('target') || c.req.query('target') || 'auto';
-    const dryRunParam = formData.get('dryRun') || c.req.query('dryRun') || 'false';
-    const dryRun = dryRunParam === 'true' || dryRunParam === true;
+    const mode = formData.get('mode') || 'merge';
+    const target = formData.get('target') || 'auto';
 
-    // 验证文件
     if (!file || typeof file === 'string') {
       return c.json({ ok: false, error: '请上传书签 HTML 文件' }, 400);
     }
-
-    // 检查文件大小
-    const fileSize = file.size || 0;
-    if (fileSize > MAX_FILE_SIZE) {
+    if (file.size > MAX_FILE_SIZE) {
       return c.json({ ok: false, error: `文件大小超过限制 (最大 ${MAX_FILE_SIZE / 1024 / 1024}MB)` }, 400);
     }
 
-    // 读取文件内容
     const htmlContent = await file.text();
     if (!htmlContent || htmlContent.length < 10) {
       return c.json({ ok: false, error: '文件内容为空或无效' }, 400);
     }
 
-    // 解析书签 HTML
-    const { menus: parsedMenus, errors: parseErrors } = parseBookmarkHtml(htmlContent);
-    const { menuList, subMenuList, cardList } = flattenParsedData(parsedMenus);
-
-    // 统计数据
-    const stats = {
-      created: { menus: 0, subMenus: 0, cards: 0 },
-      updated: { menus: 0, subMenus: 0, cards: 0 },
-      skipped: { menus: 0, subMenus: 0, cards: 0 }
-    };
-    const sample = [];
-    const errors = [...parseErrors];
-
-    // 如果没有解析到任何数据
-    if (menuList.length === 0 && cardList.length === 0) {
-      return c.json({
-        ok: false,
-        error: '未能从书签文件中解析出有效数据',
-        errors,
-        dryRun
-      }, 400);
+    // 解析书签
+    const { bookmarks, rootFolders, errors } = parseBookmarkHtml(htmlContent);
+    if (bookmarks.length === 0) {
+      return c.json({ ok: false, error: '未能从书签文件中解析出有效数据', errors }, 400);
     }
 
-    // 解析 target 参数
+    // 解析 target
+    const targetType = target === 'auto' ? 'auto' : 'menu';
     let targetMenuId = null;
-    if (target !== 'auto' && target.startsWith('menu:')) {
+    let targetMenuName = null;
+    if (targetType === 'menu') {
       targetMenuId = parseInt(target.replace('menu:', ''), 10);
       if (isNaN(targetMenuId)) {
         return c.json({ ok: false, error: 'target 参数格式错误' }, 400);
       }
-      // 验证目标菜单存在
-      const targetMenu = await c.env.DB.prepare('SELECT id FROM menus WHERE id = ?')
-        .bind(targetMenuId)
-        .first();
+      const targetMenu = await c.env.DB.prepare('SELECT id, name FROM menus WHERE id = ?')
+        .bind(targetMenuId).first();
       if (!targetMenu) {
         return c.json({ ok: false, error: `目标栏目 (id=${targetMenuId}) 不存在` }, 404);
       }
+      targetMenuName = targetMenu.name;
     }
 
-    // dry run 模式: 只返回预览
-    if (dryRun) {
-      // 计算预览统计
-      if (target === 'auto') {
-        // 查询已存在的 menus
-        const existingMenus = await c.env.DB.prepare('SELECT name FROM menus').all();
-        const existingMenuNames = new Set((existingMenus.results || []).map(m => m.name));
+    // 加载现有数据
+    const { existingMenus, existingGroups, existingUrls } = await loadExistingData(
+      c.env.DB,
+      targetType === 'menu' ? targetMenuId : null
+    );
 
-        for (const menu of menuList) {
-          if (existingMenuNames.has(menu.name)) {
-            stats.skipped.menus++;
-          } else {
-            stats.created.menus++;
-          }
-        }
-      }
-
-      stats.created.subMenus = subMenuList.length;
-      stats.created.cards = cardList.length;
-
-      // 提取样本
-      const sampleCards = cardList.slice(0, 10).map(card => ({
-        title: card.title,
-        url: card.url
-      }));
-
-      return c.json({
-        ok: true,
-        dryRun: true,
-        created: stats.created,
-        updated: stats.updated,
-        skipped: stats.skipped,
-        errors,
-        sample: sampleCards,
-        summary: {
-          totalMenus: menuList.length,
-          totalSubMenus: subMenuList.length,
-          totalCards: cardList.length
-        }
-      });
-    }
-
-    // ========== 实际导入 ==========
-
-    // replace 模式: 先删除数据
+    // 替换模式下，清空目标范围的已有 URL
     if (mode === 'replace') {
-      if (targetMenuId) {
-        // 只删除目标菜单下的数据
-        await c.env.DB.prepare('DELETE FROM cards WHERE menu_id = ?').bind(targetMenuId).run();
-        await c.env.DB.prepare('DELETE FROM sub_menus WHERE parent_id = ?').bind(targetMenuId).run();
+      if (targetType === 'menu') {
+        // 清空指定菜单的 URL
+        for (const [key, urlSet] of existingUrls) {
+          if (key.startsWith(`${targetMenuId}-`)) {
+            urlSet.clear();
+          }
+        }
       } else {
-        // 删除所有导入相关的数据（按名称匹配）
-        for (const menu of menuList) {
-          const existing = await c.env.DB.prepare('SELECT id FROM menus WHERE name = ?')
-            .bind(menu.name)
-            .first();
-          if (existing) {
-            await c.env.DB.prepare('DELETE FROM cards WHERE menu_id = ?').bind(existing.id).run();
-            await c.env.DB.prepare('DELETE FROM sub_menus WHERE parent_id = ?').bind(existing.id).run();
-            await c.env.DB.prepare('DELETE FROM menus WHERE id = ?').bind(existing.id).run();
+        // 自动创建模式，清空本次涉及菜单的 URL
+        const involvedMenuNames = new Set(rootFolders);
+        // 检查是否有根级散书签
+        if (bookmarks.some(b => b.rootFolder === null)) {
+          involvedMenuNames.add('导入书签');
+        }
+        for (const menuName of involvedMenuNames) {
+          const menuId = existingMenus.get(menuName);
+          if (menuId) {
+            for (const [key, urlSet] of existingUrls) {
+              if (key.startsWith(`${menuId}-`)) {
+                urlSet.clear();
+              }
+            }
           }
         }
       }
     }
 
-    // 映射表: tempId -> 实际 ID
-    const menuIdMap = new Map();
-    const subMenuIdMap = new Map();
+    // 生成导入计划
+    const plan = generateImportPlan({
+      bookmarks,
+      rootFolders,
+      targetType,
+      targetMenuId,
+      targetMenuName,
+      existingMenus,
+      existingGroups,
+      existingUrls
+    });
 
-    // 1. 创建/复用 menus
-    if (target === 'auto') {
-      for (const menu of menuList) {
-        // 查找同名菜单
-        const existing = await c.env.DB.prepare('SELECT id FROM menus WHERE name = ?')
-          .bind(menu.name)
-          .first();
+    // 构建详细预览结构
+    const menuDetails = plan.menus.map(m => {
+      const groupsInMenu = plan.groups.filter(g => g.menuKey === m.key);
+      const cardsDirectInMenu = plan.cards.filter(c => c.menuKey === m.key && !c.groupKey);
+      return {
+        name: m.name,
+        action: m.action,
+        groupCount: groupsInMenu.length,
+        groups: groupsInMenu.map(g => {
+          const cardsInGroup = plan.cards.filter(c => c.groupKey === g.key);
+          return {
+            name: g.name,
+            action: g.action,
+            cardCount: cardsInGroup.filter(c => c.action === 'create').length,
+            skipCount: cardsInGroup.filter(c => c.action === 'skip').length
+          };
+        }),
+        directCardCount: cardsDirectInMenu.filter(c => c.action === 'create').length,
+        directSkipCount: cardsDirectInMenu.filter(c => c.action === 'skip').length
+      };
+    });
 
-        if (existing) {
-          menuIdMap.set(menu._tempId, existing.id);
-          stats.skipped.menus++;
-        } else {
-          const result = await c.env.DB.prepare(
-            'INSERT INTO menus (name, "order") VALUES (?, ?)'
-          ).bind(menu.name, menu.order).run();
-          menuIdMap.set(menu._tempId, result.meta.last_row_id);
-          stats.created.menus++;
-        }
-      }
-    } else {
-      // target = menu:<id>, 所有内容都导入到指定菜单
-      for (const menu of menuList) {
-        menuIdMap.set(menu._tempId, targetMenuId);
-      }
-    }
-
-    // 2. 创建 sub_menus
-    for (const subMenu of subMenuList) {
-      const parentId = menuIdMap.get(subMenu._menuTempId);
-      if (!parentId) {
-        errors.push(`子栏目 "${subMenu.name}" 的父栏目未找到`);
-        continue;
-      }
-
-      // 查找同名子菜单
-      const existing = await c.env.DB.prepare(
-        'SELECT id FROM sub_menus WHERE parent_id = ? AND name = ?'
-      ).bind(parentId, subMenu.name).first();
-
-      if (existing) {
-        subMenuIdMap.set(subMenu._tempId, existing.id);
-        stats.skipped.subMenus++;
-      } else {
-        const result = await c.env.DB.prepare(
-          'INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, ?, ?)'
-        ).bind(parentId, subMenu.name, subMenu.order).run();
-        subMenuIdMap.set(subMenu._tempId, result.meta.last_row_id);
-        stats.created.subMenus++;
-      }
-    }
-
-    // 3. 批量创建 cards (使用去重策略)
-    // 先获取目标范围内已存在的 URL
-    const existingUrls = new Map(); // key: "menuId-subMenuId-url", value: card id
-
-    // 收集所有需要检查的 menu_id
-    const allMenuIds = [...new Set(menuIdMap.values())];
-    for (const menuId of allMenuIds) {
-      const cardsInMenu = await c.env.DB.prepare(
-        'SELECT id, url, sub_menu_id FROM cards WHERE menu_id = ?'
-      ).bind(menuId).all();
-
-      for (const card of (cardsInMenu.results || [])) {
-        const key = `${menuId}-${card.sub_menu_id || 'null'}-${card.url}`;
-        existingUrls.set(key, card.id);
-      }
-    }
-
-    // 批量插入 cards
-    for (const card of cardList) {
-      const menuId = menuIdMap.get(card._menuTempId);
-      const subMenuId = card._subMenuTempId ? subMenuIdMap.get(card._subMenuTempId) : null;
-
-      if (!menuId) {
-        errors.push(`卡片 "${card.title}" 的所属栏目未找到`);
-        continue;
-      }
-
-      const urlKey = `${menuId}-${subMenuId || 'null'}-${card.url}`;
-
-      if (existingUrls.has(urlKey)) {
-        // URL 已存在，跳过
-        stats.skipped.cards++;
-      } else {
-        // 插入新卡片
-        await c.env.DB.prepare(
-          'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order") VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-        ).bind(
-          menuId,
-          subMenuId,
-          card.title,
-          card.url,
-          null,
-          null,
-          card.desc || null,
-          card.order
-        ).run();
-        stats.created.cards++;
-
-        // 添加到已存在集合，防止同一批次重复
-        existingUrls.set(urlKey, true);
-      }
-    }
-
-    // 生成样本
-    const sampleCards = cardList.slice(0, 5).map(card => ({
-      title: card.title,
-      url: card.url
-    }));
+    // 样本书签
+    const sample = plan.cards.slice(0, 10).map(c => ({ title: c.title, url: c.url }));
 
     return c.json({
       ok: true,
-      dryRun: false,
-      created: stats.created,
-      updated: stats.updated,
-      skipped: stats.skipped,
+      mode,
+      targetType,
+      targetMenuId,
+      targetMenuName,
+      stats: plan.stats,
+      menuDetails,
+      sample,
       errors,
-      sample: sampleCards
+      // 返回 plan 用于确认导入
+      plan
     });
 
   } catch (e) {
-    console.error('Import bookmarks error:', e);
+    console.error('Preview bookmarks error:', e);
+    return c.json({ ok: false, error: `预览失败: ${e.message}` }, 500);
+  }
+});
+
+/**
+ * POST /api/import/bookmarks/apply
+ * 根据 plan 执行实际导入
+ */
+app.post('/api/import/bookmarks/apply', requireAuth, async (c) => {
+  try {
+    const body = await c.req.json();
+    const { plan, mode, targetType, targetMenuId } = body;
+
+    if (!plan || !plan.menus || !plan.groups || !plan.cards) {
+      return c.json({ ok: false, error: '无效的导入计划' }, 400);
+    }
+
+    const db = c.env.DB;
+    const stats = {
+      menus: { created: 0, reused: 0 },
+      groups: { created: 0, reused: 0 },
+      cards: { created: 0, skipped: 0 }
+    };
+    const errors = [];
+
+    // ========== 替换模式: 先删除目标范围数据 ==========
+    if (mode === 'replace') {
+      const deleteStmts = [];
+
+      if (targetType === 'menu' && targetMenuId) {
+        // 删除指定菜单下的所有卡片和分组
+        deleteStmts.push(db.prepare('DELETE FROM cards WHERE menu_id = ?').bind(targetMenuId));
+        deleteStmts.push(db.prepare('DELETE FROM sub_menus WHERE parent_id = ?').bind(targetMenuId));
+      } else {
+        // 自动创建模式: 删除本次涉及的菜单
+        for (const menuPlan of plan.menus) {
+          if (menuPlan.existingId) {
+            deleteStmts.push(db.prepare('DELETE FROM cards WHERE menu_id = ?').bind(menuPlan.existingId));
+            deleteStmts.push(db.prepare('DELETE FROM sub_menus WHERE parent_id = ?').bind(menuPlan.existingId));
+          }
+        }
+      }
+
+      if (deleteStmts.length > 0) {
+        await db.batch(deleteStmts);
+      }
+    }
+
+    // ========== 创建/复用菜单 ==========
+    const menuIdMap = new Map(); // menuKey => actual id
+
+    for (const menuPlan of plan.menus) {
+      if (menuPlan.action === 'reuse' && menuPlan.existingId) {
+        menuIdMap.set(menuPlan.key, menuPlan.existingId);
+        stats.menus.reused++;
+      } else {
+        // 创建新菜单
+        const result = await db.prepare(
+          'INSERT INTO menus (name, "order") VALUES (?, ?)'
+        ).bind(menuPlan.name, menuPlan.order).run();
+        menuIdMap.set(menuPlan.key, result.meta.last_row_id);
+        stats.menus.created++;
+      }
+    }
+
+    // ========== 创建/复用分组 ==========
+    const groupIdMap = new Map(); // groupKey => actual id
+
+    // 按 menuKey 分组，减少查询
+    const groupsByMenu = new Map();
+    for (const groupPlan of plan.groups) {
+      if (!groupsByMenu.has(groupPlan.menuKey)) {
+        groupsByMenu.set(groupPlan.menuKey, []);
+      }
+      groupsByMenu.get(groupPlan.menuKey).push(groupPlan);
+    }
+
+    for (const [menuKey, groups] of groupsByMenu) {
+      const menuId = menuIdMap.get(menuKey);
+      if (!menuId) continue;
+
+      // 查询该菜单下已存在的分组
+      const existingGroupsRes = await db.prepare(
+        'SELECT id, name FROM sub_menus WHERE parent_id = ?'
+      ).bind(menuId).all();
+      const existingGroupMap = new Map();
+      for (const g of (existingGroupsRes.results || [])) {
+        existingGroupMap.set(g.name, g.id);
+      }
+
+      // 批量创建新分组
+      const createStmts = [];
+      const createGroups = [];
+
+      for (const groupPlan of groups) {
+        const existingId = existingGroupMap.get(groupPlan.name);
+        if (existingId) {
+          groupIdMap.set(groupPlan.key, existingId);
+          stats.groups.reused++;
+        } else {
+          createStmts.push(
+            db.prepare('INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, ?, ?)')
+              .bind(menuId, groupPlan.name, groupPlan.order)
+          );
+          createGroups.push(groupPlan);
+        }
+      }
+
+      if (createStmts.length > 0) {
+        const results = await db.batch(createStmts);
+        for (let i = 0; i < createGroups.length; i++) {
+          groupIdMap.set(createGroups[i].key, results[i].meta.last_row_id);
+          stats.groups.created++;
+        }
+      }
+    }
+
+    // ========== 批量创建卡片 ==========
+    // 先收集需要创建的卡片
+    const cardsToCreate = plan.cards.filter(c => c.action === 'create');
+    stats.cards.skipped = plan.cards.filter(c => c.action === 'skip').length;
+
+    // 分批执行（D1 batch 最多 100 条）
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < cardsToCreate.length; i += BATCH_SIZE) {
+      const batch = cardsToCreate.slice(i, i + BATCH_SIZE);
+      const stmts = [];
+
+      for (const card of batch) {
+        const menuId = menuIdMap.get(card.menuKey);
+        const groupId = card.groupKey ? groupIdMap.get(card.groupKey) : null;
+
+        if (!menuId) {
+          errors.push(`卡片 "${card.title}" 的菜单未找到`);
+          continue;
+        }
+
+        stmts.push(
+          db.prepare(
+            'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order") VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+          ).bind(menuId, groupId, card.title, card.url, null, null, null, card.order)
+        );
+      }
+
+      if (stmts.length > 0) {
+        await db.batch(stmts);
+        stats.cards.created += stmts.length;
+      }
+    }
+
+    return c.json({
+      ok: true,
+      created: {
+        menus: stats.menus.created,
+        subMenus: stats.groups.created,
+        cards: stats.cards.created
+      },
+      skipped: {
+        menus: stats.menus.reused,
+        subMenus: stats.groups.reused,
+        cards: stats.cards.skipped
+      },
+      errors
+    });
+
+  } catch (e) {
+    console.error('Apply bookmarks error:', e);
     return c.json({ ok: false, error: `导入失败: ${e.message}` }, 500);
+  }
+});
+
+/**
+ * POST /api/import/bookmarks (Deprecated, 兼容旧接口)
+ */
+app.post('/api/import/bookmarks', requireAuth, async (c) => {
+  // 将旧接口请求转发到新流程
+  const formData = await c.req.formData();
+  const dryRunParam = formData.get('dryRun') || c.req.query('dryRun') || 'false';
+  const dryRun = dryRunParam === 'true' || dryRunParam === true;
+
+  if (dryRun) {
+    // 预览模式
+    const previewReq = new Request(c.req.url.replace('/bookmarks', '/bookmarks/preview'), {
+      method: 'POST',
+      headers: c.req.raw.headers,
+      body: await c.req.raw.clone().blob()
+    });
+    return app.fetch(previewReq, c.env, c.executionCtx);
+  } else {
+    // 实际导入: 先预览再应用
+    const file = formData.get('file');
+    const mode = formData.get('mode') || 'merge';
+    const target = formData.get('target') || 'auto';
+
+    // 执行预览
+    const newFormData = new FormData();
+    newFormData.append('file', file);
+    newFormData.append('mode', mode);
+    newFormData.append('target', target);
+
+    const previewReq = new Request(c.req.url.replace('/bookmarks', '/bookmarks/preview'), {
+      method: 'POST',
+      headers: { 'Authorization': c.req.header('authorization') },
+      body: newFormData
+    });
+    const previewRes = await app.fetch(previewReq, c.env, c.executionCtx);
+    const previewData = await previewRes.json();
+
+    if (!previewData.ok) {
+      return c.json(previewData, previewRes.status);
+    }
+
+    // 执行应用
+    const targetType = target === 'auto' ? 'auto' : 'menu';
+    const targetMenuId = targetType === 'menu' ? parseInt(target.replace('menu:', ''), 10) : null;
+
+    const applyReq = new Request(c.req.url.replace('/bookmarks', '/bookmarks/apply'), {
+      method: 'POST',
+      headers: {
+        'Authorization': c.req.header('authorization'),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        plan: previewData.plan,
+        mode,
+        targetType,
+        targetMenuId
+      })
+    });
+    return app.fetch(applyReq, c.env, c.executionCtx);
   }
 });
 

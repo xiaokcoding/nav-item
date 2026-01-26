@@ -51,12 +51,12 @@
           <label class="radio-item">
             <input type="radio" v-model="targetType" value="auto" />
             <span class="radio-label">自动创建</span>
-            <span class="radio-desc">顶层文件夹自动创建为栏目</span>
+            <span class="radio-desc">顶层文件夹自动创建为栏目，子文件夹路径创建为分组</span>
           </label>
           <label class="radio-item">
             <input type="radio" v-model="targetType" value="menu" />
             <span class="radio-label">指定栏目</span>
-            <span class="radio-desc">所有书签导入到选定栏目</span>
+            <span class="radio-desc">所有书签导入到选定栏目，分组按完整路径创建</span>
           </label>
         </div>
         <select v-if="targetType === 'menu'" v-model="targetMenuId" class="menu-select">
@@ -72,16 +72,16 @@
         <button
           class="btn btn-preview"
           @click="previewImport"
-          :disabled="!selectedFile || loading"
+          :disabled="!canPreview || loading"
         >
-          {{ loading && isDryRun ? '预览中...' : '预览导入' }}
+          {{ loading && !isApplying ? '预览中...' : '预览导入' }}
         </button>
         <button
           class="btn btn-import"
           @click="executeImport"
-          :disabled="!selectedFile || loading || !previewResult"
+          :disabled="!previewResult?.plan || loading"
         >
-          {{ loading && !isDryRun ? '导入中...' : '确认导入' }}
+          {{ loading && isApplying ? '导入中...' : '确认导入' }}
         </button>
       </div>
     </div>
@@ -89,24 +89,66 @@
     <!-- 预览结果 -->
     <div v-if="previewResult" class="result-panel preview-panel">
       <h3>预览结果</h3>
+      
+      <!-- 统计摘要 -->
       <div class="stats-grid">
         <div class="stat-item">
           <span class="stat-label">将创建栏目</span>
-          <span class="stat-value">{{ previewResult.created?.menus || 0 }}</span>
+          <span class="stat-value">{{ previewResult.stats?.menusToCreate || 0 }}</span>
         </div>
         <div class="stat-item">
-          <span class="stat-label">将创建子栏目</span>
-          <span class="stat-value">{{ previewResult.created?.subMenus || 0 }}</span>
+          <span class="stat-label">复用已有栏目</span>
+          <span class="stat-value muted">{{ previewResult.stats?.menusToReuse || 0 }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">将创建分组</span>
+          <span class="stat-value">{{ previewResult.stats?.groupsToCreate || 0 }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">复用已有分组</span>
+          <span class="stat-value muted">{{ previewResult.stats?.groupsToReuse || 0 }}</span>
         </div>
         <div class="stat-item">
           <span class="stat-label">将创建卡片</span>
-          <span class="stat-value">{{ previewResult.created?.cards || 0 }}</span>
+          <span class="stat-value success">{{ previewResult.stats?.cardsToCreate || 0 }}</span>
         </div>
         <div class="stat-item">
-          <span class="stat-label">将跳过栏目</span>
-          <span class="stat-value muted">{{ previewResult.skipped?.menus || 0 }}</span>
+          <span class="stat-label">将跳过重复</span>
+          <span class="stat-value muted">{{ previewResult.stats?.cardsToSkip || 0 }}</span>
         </div>
       </div>
+
+      <!-- 栏目详情 -->
+      <div v-if="previewResult.menuDetails?.length" class="menu-details">
+        <h4>栏目详情</h4>
+        <div class="menu-list">
+          <div v-for="(menu, idx) in previewResult.menuDetails" :key="idx" class="menu-item">
+            <div class="menu-header">
+              <span class="menu-name">{{ menu.name }}</span>
+              <span class="menu-action" :class="menu.action">{{ menu.action === 'create' ? '新建' : '复用' }}</span>
+            </div>
+            <div class="menu-stats">
+              <span v-if="menu.directCardCount > 0">直属卡片: {{ menu.directCardCount }}</span>
+              <span v-if="menu.directSkipCount > 0" class="skip-count">(跳过 {{ menu.directSkipCount }})</span>
+              <span v-if="menu.groupCount > 0">分组: {{ menu.groupCount }}</span>
+            </div>
+            <div v-if="menu.groups?.length" class="group-list">
+              <div v-for="(group, gIdx) in menu.groups.slice(0, showAllGroups[idx] ? undefined : 5)" :key="gIdx" class="group-item">
+                <span class="group-name">{{ group.name }}</span>
+                <span class="group-stats">
+                  卡片: {{ group.cardCount }}
+                  <span v-if="group.skipCount > 0" class="skip-count">(跳过 {{ group.skipCount }})</span>
+                </span>
+              </div>
+              <button v-if="menu.groups.length > 5" class="btn-more" @click="toggleGroups(idx)">
+                {{ showAllGroups[idx] ? '收起' : `展开剩余 ${menu.groups.length - 5} 个分组` }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 样本书签 -->
       <div v-if="previewResult.sample?.length" class="sample-list">
         <h4>样本书签</h4>
         <ul>
@@ -116,6 +158,8 @@
           </li>
         </ul>
       </div>
+
+      <!-- 解析提示 -->
       <div v-if="previewResult.errors?.length" class="error-list">
         <h4>解析提示</h4>
         <ul>
@@ -134,7 +178,7 @@
           <span class="stat-value success">{{ importResult.created?.menus || 0 }}</span>
         </div>
         <div class="stat-item">
-          <span class="stat-label">已创建子栏目</span>
+          <span class="stat-label">已创建分组</span>
           <span class="stat-value success">{{ importResult.created?.subMenus || 0 }}</span>
         </div>
         <div class="stat-item">
@@ -142,7 +186,7 @@
           <span class="stat-value success">{{ importResult.created?.cards || 0 }}</span>
         </div>
         <div class="stat-item">
-          <span class="stat-label">已跳过卡片</span>
+          <span class="stat-label">已跳过重复</span>
           <span class="stat-value muted">{{ importResult.skipped?.cards || 0 }}</span>
         </div>
       </div>
@@ -152,8 +196,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
-import { getMenus, importBookmarks } from '../../api';
+import { ref, computed, onMounted } from 'vue';
+import { getMenus, previewBookmarks, applyBookmarks } from '../../api';
 
 const fileInput = ref(null);
 const selectedFile = ref(null);
@@ -162,9 +206,16 @@ const targetType = ref('auto');
 const targetMenuId = ref('');
 const menuList = ref([]);
 const loading = ref(false);
-const isDryRun = ref(false);
+const isApplying = ref(false);
 const previewResult = ref(null);
 const importResult = ref(null);
+const showAllGroups = ref({});
+
+const canPreview = computed(() => {
+  if (!selectedFile.value) return false;
+  if (targetType.value === 'menu' && !targetMenuId.value) return false;
+  return true;
+});
 
 onMounted(async () => {
   try {
@@ -181,6 +232,7 @@ function onFileChange(e) {
     selectedFile.value = file;
     previewResult.value = null;
     importResult.value = null;
+    showAllGroups.value = {};
   }
 }
 
@@ -191,50 +243,53 @@ function formatFileSize(bytes) {
 }
 
 function truncateUrl(url) {
-  if (url.length > 50) {
-    return url.slice(0, 47) + '...';
-  }
-  return url;
+  return url.length > 50 ? url.slice(0, 47) + '...' : url;
+}
+
+function toggleGroups(idx) {
+  showAllGroups.value[idx] = !showAllGroups.value[idx];
 }
 
 async function previewImport() {
-  if (!selectedFile.value) return;
+  if (!canPreview.value) return;
 
   loading.value = true;
-  isDryRun.value = true;
+  isApplying.value = false;
   importResult.value = null;
 
   try {
     const target = targetType.value === 'auto' ? 'auto' : `menu:${targetMenuId.value}`;
-    const result = await importBookmarks(selectedFile.value, importMode.value, target, true);
+    const result = await previewBookmarks(selectedFile.value, importMode.value, target);
     previewResult.value = result.data;
+    showAllGroups.value = {};
   } catch (e) {
     previewResult.value = { ok: false, error: e.response?.data?.error || e.message };
   } finally {
     loading.value = false;
-    isDryRun.value = false;
   }
 }
 
 async function executeImport() {
-  if (!selectedFile.value || !previewResult.value) return;
+  if (!previewResult.value?.plan) return;
 
   loading.value = true;
-  isDryRun.value = false;
+  isApplying.value = true;
 
   try {
-    const target = targetType.value === 'auto' ? 'auto' : `menu:${targetMenuId.value}`;
-    const result = await importBookmarks(selectedFile.value, importMode.value, target, false);
+    const result = await applyBookmarks(
+      previewResult.value.plan,
+      importMode.value,
+      previewResult.value.targetType,
+      previewResult.value.targetMenuId
+    );
     importResult.value = result.data;
 
     if (result.data.ok) {
-      // 清空表单
       selectedFile.value = null;
       previewResult.value = null;
       if (fileInput.value) {
         fileInput.value.value = '';
       }
-      // 刷新菜单列表
       const res = await getMenus();
       menuList.value = res.data || [];
     }
@@ -242,13 +297,14 @@ async function executeImport() {
     importResult.value = { ok: false, error: e.response?.data?.error || e.message };
   } finally {
     loading.value = false;
+    isApplying.value = false;
   }
 }
 </script>
 
 <style scoped>
 .bookmark-import {
-  max-width: 800px;
+  max-width: 900px;
   margin: 0 auto;
   padding: 20px;
 }
@@ -432,13 +488,13 @@ async function executeImport() {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
 }
 
 .stat-item {
   background: #f8f9fa;
-  padding: 16px;
+  padding: 14px;
   border-radius: 8px;
   text-align: center;
 }
@@ -451,7 +507,7 @@ async function executeImport() {
 }
 
 .stat-value {
-  font-size: 1.5rem;
+  font-size: 1.4rem;
   font-weight: 600;
   color: #2566d8;
 }
@@ -462,6 +518,103 @@ async function executeImport() {
 
 .stat-value.muted {
   color: #999;
+}
+
+/* 栏目详情 */
+.menu-details {
+  margin-top: 20px;
+}
+
+.menu-details h4 {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 12px;
+}
+
+.menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.menu-item {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.menu-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.menu-name {
+  font-weight: 600;
+  color: #333;
+}
+
+.menu-action {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.menu-action.create {
+  background: #e3f9e5;
+  color: #1a7f37;
+}
+
+.menu-action.reuse {
+  background: #e8f4fd;
+  color: #0969da;
+}
+
+.menu-stats {
+  font-size: 13px;
+  color: #666;
+  display: flex;
+  gap: 12px;
+}
+
+.skip-count {
+  color: #999;
+}
+
+.group-list {
+  margin-top: 8px;
+  padding-left: 12px;
+  border-left: 2px solid #e0e0e0;
+}
+
+.group-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.group-name {
+  color: #555;
+}
+
+.group-stats {
+  color: #888;
+}
+
+.btn-more {
+  background: none;
+  border: none;
+  color: #2566d8;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 0;
+  margin-top: 4px;
+}
+
+.btn-more:hover {
+  text-decoration: underline;
 }
 
 .sample-list, .error-list {
@@ -530,6 +683,10 @@ async function executeImport() {
     display: block;
     margin-left: 0;
     margin-top: 4px;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 </style>

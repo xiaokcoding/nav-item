@@ -47,6 +47,23 @@ export const changePassword = (oldPassword, newPassword) => axios.put(`${BASE}/u
 export const getUsers = () => axios.get(`${BASE}/users`, { headers: authHeaders() });
 
 // 书签导入API
+export const previewBookmarks = (file, mode = 'merge', target = 'auto') => {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('mode', mode);
+  formData.append('target', target);
+  return axios.post(`${BASE}/import/bookmarks/preview`, formData, {
+    headers: { ...authHeaders(), 'Content-Type': 'multipart/form-data' }
+  });
+};
+
+export const applyBookmarks = (plan, mode, targetType, targetMenuId) => {
+  return axios.post(`${BASE}/import/bookmarks/apply`, {
+    plan, mode, targetType, targetMenuId
+  }, { headers: authHeaders() });
+};
+
+// 兼容旧 API
 export const importBookmarks = (file, mode = 'merge', target = 'auto', dryRun = false) => {
   const formData = new FormData();
   formData.append('file', file);

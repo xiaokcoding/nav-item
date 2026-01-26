@@ -63,13 +63,17 @@ function hideSubMenu(menuId) {
 .menu-bar {
   display: flex;
   justify-content: center;
+  align-items: center;  /* 垂直居中对齐 */
   flex-wrap: wrap;
   padding: 0 1rem;
   position: relative;
+  gap: 0.5rem;
 }
 
 .menu-item {
   position: relative;
+  display: flex;
+  align-items: center;
 }
 
 .menu-bar button {
@@ -78,7 +82,7 @@ function hideSubMenu(menuId) {
   color: #fff;
   font-size: 16px;
   font-weight: 500;
-  padding: 0.8rem 2rem;
+  padding: 0.8rem 1.2rem;  /* 减小左右内边距 */
   cursor: pointer;
   transition: all 0.3s ease;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -86,6 +90,8 @@ function hideSubMenu(menuId) {
   border-radius: 8px;
   position: relative;
   overflow: hidden;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .menu-bar button::before {

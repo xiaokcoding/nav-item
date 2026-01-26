@@ -62,12 +62,12 @@ export function parseBookmarkHtml(html) {
     }
 
     /**
-     * 获取元素的直接子元素（只匹配指定标签）
+     * 从DT元素中获取A标签
      */
-    function getDirectChild(parent, tagName) {
-      if (!parent || !parent.childNodes) return null;
-      for (const child of parent.childNodes) {
-        if (child.nodeType === 1 && child.tagName?.toLowerCase() === tagName) {
+    function getAFromDt(dt) {
+      if (!dt || !dt.childNodes) return null;
+      for (const child of dt.childNodes) {
+        if (child.nodeType === 1 && child.tagName?.toLowerCase() === 'a') {
           return child;
         }
       }
@@ -75,82 +75,43 @@ export function parseBookmarkHtml(html) {
     }
 
     /**
-     * 获取 DT 元素的下一个兄弟 DL 元素
-     * 注意：在书签 HTML 中，DL 通常是 DT 的兄弟而不是子元素
-     * 但 node-html-parser 可能将其解析为子元素
+     * 扁平化解析书签
+     * node-html-parser 把所有元素扁平化到同一个 DL 下
+     * 所以用顺序来判断书签归属：遇到 H3 就切换当前文件夹，后续 DT 都属于这个文件夹
      */
-    function getNestedDl(dtElement) {
-      // 先检查直接子元素
-      const directDl = getDirectChild(dtElement, 'dl');
-      if (directDl) return directDl;
-      
-      // 检查下一个兄弟
-      let next = dtElement.nextElementSibling;
-      while (next) {
-        if (next.tagName?.toLowerCase() === 'dl') {
-          return next;
+    let currentFolder = null;  // 当前文件夹名
+    let skipUntilNextH3 = false;  // 是否跳过直到下一个H3（用于跳过书签栏标题本身）
+
+    const children = topDl.childNodes;
+    for (const child of children) {
+      if (child.nodeType !== 1) continue;
+      const tagName = child.tagName?.toLowerCase();
+
+      if (tagName === 'h3') {
+        const folderName = sanitizeString(child.text || child.textContent || '');
+        if (!folderName) {
+          errors.push('发现空名称的文件夹，已跳过');
+          continue;
         }
-        if (next.tagName?.toLowerCase() === 'dt') {
-          // 遇到另一个 DT，停止
-          break;
+
+        // 检查是否为书签栏
+        const isToolbarFolder = child.getAttribute('personal_toolbar_folder') === 'true';
+        
+        if (isToolbarFolder) {
+          // 书签栏不作为根目录，跳过这个 H3，但继续处理后面的内容
+          // 后续的 H3 会成为真正的根文件夹
+          skipUntilNextH3 = false;  // 重置，继续处理后面内容
+          currentFolder = null;  // 书签栏下的直接书签没有文件夹
+        } else {
+          // 普通文件夹，成为当前文件夹
+          currentFolder = folderName;
+          rootFolderSet.add(folderName);
+          skipUntilNextH3 = false;
         }
-        next = next.nextElementSibling;
-      }
-      return null;
-    }
-
-    /**
-     * 递归解析书签
-     * @param {HTMLElement} dlElement
-     * @param {string|null} rootFolder 当前根文件夹名
-     * @param {string[]} pathStack 当前路径栈（不含根文件夹）
-     */
-    function traverse(dlElement, rootFolder, pathStack) {
-      if (!dlElement) return;
-
-      const children = dlElement.childNodes;
-      for (const child of children) {
-        if (child.nodeType !== 1) continue;
-        const tagName = child.tagName?.toLowerCase();
-        if (tagName !== 'dt') continue;
-
-        // 关键修复：只检查直接子元素，而不是用 querySelector 匹配所有后代
-        const h3 = getDirectChild(child, 'h3');
-        const a = getDirectChild(child, 'a');
-        const nestedDl = getNestedDl(child);
-
-        if (h3) {
-          // 文件夹
-          const folderName = sanitizeString(h3.text || h3.textContent || '');
-          if (!folderName) {
-            errors.push('发现空名称的文件夹，已跳过');
-            continue;
-          }
-
-          // 检查是否为书签栏（PERSONAL_TOOLBAR_FOLDER="true"）
-          // node-html-parser 会将属性名转为小写
-          const isToolbarFolder = h3.getAttribute('personal_toolbar_folder') === 'true';
-
-          if (isToolbarFolder) {
-            // 书签栏不作为根目录，直接处理其子内容
-            if (nestedDl) {
-              traverse(nestedDl, null, []);
-            }
-          } else if (rootFolder === null) {
-            // 当前在根级，这是一个根文件夹
-            rootFolderSet.add(folderName);
-            if (nestedDl) {
-              traverse(nestedDl, folderName, []);
-            }
-          } else {
-            // 当前在某个根文件夹内，这是子文件夹
-            const newPath = [...pathStack, folderName];
-            if (nestedDl) {
-              traverse(nestedDl, rootFolder, newPath);
-            }
-          }
-        } else if (a) {
-          // 书签
+      } else if (tagName === 'dt' && !skipUntilNextH3) {
+        // 检查 DT 内是否有 A 标签（书签）
+        const a = getAFromDt(child);
+        if (a) {
           const url = sanitizeUrl(a.getAttribute('href') || '');
           const title = sanitizeString(a.text || a.textContent || '');
 
@@ -162,15 +123,13 @@ export function parseBookmarkHtml(html) {
           bookmarks.push({
             title: title || url,
             url,
-            rootFolder,
-            folderPath: [...pathStack],
+            rootFolder: currentFolder,
+            folderPath: [],  // 扁平化后没有子文件夹路径
             order: globalOrder++
           });
         }
       }
     }
-
-    traverse(topDl, null, []);
 
   } catch (e) {
     errors.push(`解析错误: ${e.message}`);

@@ -63,14 +63,17 @@ function hideSubMenu(menuId) {
 .menu-bar {
   display: flex;
   justify-content: center;
+  align-items: center;  /* 垂直居中对齐 */
   flex-wrap: wrap;
   padding: 0 1rem;
   position: relative;
-  gap: 0.5rem;  /* 统一菜单项间距 */
+  gap: 0.5rem;
 }
 
 .menu-item {
   position: relative;
+  display: flex;
+  align-items: center;
 }
 
 .menu-bar button {
